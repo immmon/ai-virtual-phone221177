@@ -11,12 +11,40 @@ export type JsonRepairParseResult = {
   parseError?: string;
 };
 
+/**
+ * 在解析 JSON 之前剥除"包裹噪声"：
+ * 1. 标准思维链标签块（<think>/<thinking>/<reasoning>）
+ * 2. 通用兜底：所有标签名疑似"思考过程"的标签块（覆盖 <thought>/<reflection>/<cot>/<chain_of_thought> 等）
+ * 3. 特殊 token 风格（<|thought|>...</|thought|>、<|begin_of_thought|>...<|end_of_thought|>）
+ * 4. Markdown JSON 代码围栏
+ *
+ * 第二、三步是为了兼容输出格式不规范的推理模型（如 MiniMax-M3、Qwen、Llama 等非标变体），
+ * 把"思考过程"误吐到 JSON 之外 / JSON 之前的情况抹掉，让下游 JSON 解析能正常跑。
+ */
 export function stripJsonWrapperNoise(text: string): string {
   let source = text.trim();
+
+  // 1. 标准标签块：<think>/<thinking>/<reasoning>
   source = source.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
   source = source.replace(/<thinking>[\s\S]*?<\/thinking>/gi, "").trim();
   source = source.replace(/<reasoning>[\s\S]*?<\/reasoning>/gi, "").trim();
+
+  // 2. 通用兜底：所有标签名包含 think/reason/reflect/thought/reflexion/cot/chain-of-thought/scratchpad/analysis 的标签块
+  // 例：<reflection>...</reflection>、<thought>...</thought>、<cot>...</cot>、<chain_of_thought>...</chain_of_thought>、<analysis>...</analysis>
+  source = source.replace(
+    /<\s*([a-zA-Z][a-zA-Z0-9_-]*(?:think|reason|reflect|thought|reflexion|cot|chain[\s_-]?of[\s_-]?thought|scratchpad|analysis)[a-zA-Z0-9_-]*)\b[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi,
+    "",
+  ).trim();
+
+  // 3. 特殊 token 风格（ChatML / Qwen / 部分推理模型）：<|thought|>...</|thought|>、<|begin_of_thought|>...<|end_of_thought|>
+  source = source.replace(
+    /<\|[^|]*?(?:think|reason|reflect|thought|reflexion|cot|chain[\s_-]?of[\s_-]?thought|scratchpad|analysis)[^|]*?\|>[\s\S]*?<\|[^|]*?(?:think|reason|reflect|thought|reflexion|cot|chain[\s_-]?of[\s_-]?thought|scratchpad|analysis)[^|]*?\|>/gi,
+    "",
+  ).trim();
+
+  // 4. Markdown JSON 代码围栏
   source = source.replace(/```(?:json)?\s*([\s\S]*?)```/i, "$1").trim();
+
   return source;
 }
 
