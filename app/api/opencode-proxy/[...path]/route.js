@@ -5,7 +5,7 @@ export const runtime = 'nodejs';
 
 // 上游地址：OpenCodeGo 的 API 地址，末尾带 /v1
 // 建议在 Netlify 环境变量中设置，例如 OPENCODE_UPSTREAM_URL=https://你的opencodego地址/v1
-const UPSTREAM_BASE = process.env.OPENCODE_UPSTREAM_URL || 'https://opencode.ai/zen/go/v1';
+const UPSTREAM_BASE = process.env.OPENCODE_UPSTREAM_URL || 'https://api.opencodego.com/v1';
 const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
 
 async function forward(req, params) {
