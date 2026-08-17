@@ -1,64 +1,85 @@
-// app/api/opencode-proxy/[...path]/route.js
-import { NextResponse } from 'next/server';
-
-export const runtime = 'nodejs';
-
-// 上游地址：OpenCodeGo 的 API 地址，末尾带 /v1
-// 建议在 Netlify 环境变量中设置，例如 OPENCODE_UPSTREAM_URL=https://你的opencodego地址/v1
+// 上游 API 地址（末尾不要带斜杠）
+// 优先从环境变量读取，如果没设置则使用下面的默认值
 const UPSTREAM_BASE = process.env.OPENCODE_UPSTREAM_URL || 'https://api.opencodego.com/v1';
+
+// 允许跨域的来源（* 表示所有）
 const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
 
-async function forward(req, params) {
-  const { path } = await params;
-  const pathStr = Array.isArray(path) ? path.join('/') : path;
+// 处理所有 HTTP 方法（GET, POST, PUT, DELETE, OPTIONS 等）
+export async function handler(request, { params }) {
+  const path = params.path || [];
+  const pathStr = '/' + path.join('/');
+  const upstreamUrl = `${UPSTREAM_BASE}${pathStr}`;
 
-  // 拼接上游完整 URL
-  const upstreamUrl = `${UPSTREAM_BASE}/${pathStr}`;
+  // 1. 处理 OPTIONS 预检请求（直接返回 CORS 头）
+  if (request.method === 'OPTIONS') {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        'Access-Control-Allow-Origin': CORS_ORIGIN,
+        'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+        'Access-Control-Max-Age': '86400',
+      },
+    });
+  }
 
-  // 复制请求头
-  const headers = new Headers(req.headers);
-  // 删除可能干扰转发的头
-  headers.delete('host');
-  headers.delete('origin');
-  headers.delete('referer');
+  try {
+    // 2. 构建转发请求
+    const fetchOptions = {
+      method: request.method,
+      headers: {
+        // 透传大部分请求头，但去掉 host 等
+        ...Object.fromEntries(request.headers.entries()),
+        // 可以覆盖或添加自定义头，例如：
+        // 'Authorization': request.headers.get('Authorization') || '',
+      },
+      // 如果有请求体（POST/PUT），直接转发
+      body: ['GET', 'HEAD'].includes(request.method) ? undefined : request.body,
+      // 不压缩，直接透传
+      duplex: 'half',
+    };
 
-  const body = req.method === 'GET' || req.method === 'HEAD' ? undefined : await req.arrayBuffer();
+    // 3. 发送请求到上游
+    const response = await fetch(upstreamUrl, fetchOptions);
 
-  const upstreamRes = await fetch(upstreamUrl, {
-    method: req.method,
-    headers,
-    body,
-    redirect: 'follow',
-  });
+    // 4. 构建响应（直接透传状态码和响应体）
+    const responseHeaders = new Headers(response.headers);
+    responseHeaders.set('Access-Control-Allow-Origin', CORS_ORIGIN);
+    // 如果需要，也可以设置其他 CORS 头
+    // responseHeaders.set('Access-Control-Allow-Credentials', 'true');
 
-  // 构造返回头，手动加 CORS
-  const resHeaders = new Headers(upstreamRes.headers);
-  resHeaders.set('Access-Control-Allow-Origin', CORS_ORIGIN);
-  resHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-  resHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
-  resHeaders.set('Access-Control-Allow-Credentials', 'true');
-
-  return new NextResponse(upstreamRes.body, {
-    status: upstreamRes.status,
-    statusText: upstreamRes.statusText,
-    headers: resHeaders,
-  });
+    // 5. 返回响应（注意：如果响应体是流，需要克隆或直接使用）
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: responseHeaders,
+    });
+  } catch (error) {
+    // 6. 错误处理：返回 500 并带上错误信息（方便调试）
+    console.error('代理错误:', error);
+    return new Response(
+      JSON.stringify({
+        error: '代理请求失败',
+        message: error.message,
+        stack: error.stack,
+      }),
+      {
+        status: 500,
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': CORS_ORIGIN,
+        },
+      }
+    );
+  }
 }
 
-export async function GET(req, ctx) { return forward(req, ctx.params); }
-export async function POST(req, ctx) { return forward(req, ctx.params); }
-export async function PUT(req, ctx) { return forward(req, ctx.params); }
-export async function DELETE(req, ctx) { return forward(req, ctx.params); }
-export async function PATCH(req, ctx) { return forward(req, ctx.params); }
-
-export async function OPTIONS() {
-  return new NextResponse(null, {
-    status: 200,
-    headers: {
-      'Access-Control-Allow-Origin': CORS_ORIGIN,
-      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, PATCH, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With',
-      'Access-Control-Allow-Credentials': 'true',
-    },
-  });
-  }
+// 为所有方法导出同一个处理函数（Next.js App Router 要求）
+export const GET = handler;
+export const POST = handler;
+export const PUT = handler;
+export const DELETE = handler;
+export const PATCH = handler;
+export const OPTIONS = handler;
+// 如果还需要其他方法，按同样方式添加
