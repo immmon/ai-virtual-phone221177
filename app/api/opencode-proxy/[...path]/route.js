@@ -1,6 +1,6 @@
 // 上游 API 地址（末尾不要带斜杠）
 // 优先从环境变量读取，如果没设置则使用下面的默认值
-const UPSTREAM_BASE = process.env.OPENCODE_UPSTREAM_URL || 'https://api.opencodego.com/v1';
+const UPSTREAM_BASE = process.env.OPENCODE_UPSTREAM_URL || 'https://heddsghnvvc.netlify.app/api/opencode-proxy';
 
 // 允许跨域的来源（* 表示所有）
 const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
