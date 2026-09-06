@@ -151,8 +151,10 @@ type PromptBlock = {
     toolName?: string;
 };
 
+
 function resolveHistoryPromptRole(msg: ChatMessage): Exclude<LLMMessageRole, "tool"> {
-    const appHistoryRole = msg.mediaType === "app_card" ? msg.mediaData?.appHistoryRole : undefined;
+    // appHistoryRole：显示身份与记忆身份分离（自定义APP卡片与现实桥文本消息都在用）
+    const appHistoryRole = msg.mediaData?.appHistoryRole;
     if (appHistoryRole === "system" || appHistoryRole === "assistant" || appHistoryRole === "user") {
         return appHistoryRole;
     }
@@ -1047,7 +1049,7 @@ export function assemblePromptPayload(input: AssemblerInput): LLMMessage[] {
     const finalPayload: LLMMessage[] = [];
     blocks.forEach(b => {
         const inputCtx: RegexContext = b.fromHistory
-            ? { depth: b.depth, activeTags }
+            ? { depth: b.depth, activeTags, history: true }
             : { activeTags };
         const processedText = b.role === "tool" ? b.text : applyInputRegex(b.text, regexes, inputCtx);
         const carriesNativeToolData = b.role === "tool" || Boolean(b.toolCalls?.length);
@@ -1338,24 +1340,42 @@ export type RegexContext = {
     isEdit?: boolean;        // true when user is editing a message
     depth?: number;          // message depth (0 = latest)
     activeTags?: string[];   // current app tags used for tag-scoped rule filtering
+    history?: boolean;       // true when the block is a chat history message (historyOnly rules only fire here)
     macroEngine?: MacroEngine;  // for {{char}} etc. in findRegex & replaceString
 };
 
 /**
+ * 编译缓存：同一 findRegex 字符串复用编译结果。
+ * 显示层每条消息每次渲染都会命中相同规则，之前每次都 new RegExp 重新编译，
+ * 匹配替换走慢路径的会话（如含 <思考结束> 残留标签）会明显卡顿。
+ */
+const _regexFromStringCache = new Map<string, RegExp | null>();
+
+/**
  * Parse a regex string like `/pattern/flags` into a RegExp.
  * Returns null if invalid. Does NOT force any flags — uses exactly what the user wrote.
+ *
+ * 注意：缓存返回的是共享 RegExp 实例。带 g/y 标志的实例会携带 lastIndex 状态，
+ * 调用方若自行驱动匹配（exec/test 循环等），需在每次使用前 reset lastIndex 或复制实例；
+ * 直接用 replace/matchAll 等一次性 API 则无需处理。
  */
 function regexFromString(input: string): RegExp | null {
+    if (_regexFromStringCache.has(input)) return _regexFromStringCache.get(input)!;
+    let compiled: RegExp | null = null;
     try {
         const m = input.match(/(\/?)(.+)\1([a-z]*)/i);
-        if (!m) return null;
-        if (m[3] && !/^(?!.*?(.).*?\1)[dgimsuyv]+$/.test(m[3])) {
-            return new RegExp(input);
+        if (m) {
+            if (m[3] && !/^(?!.*?(.).*?\1)[dgimsuyv]+$/.test(m[3])) {
+                compiled = new RegExp(input);
+            } else {
+                compiled = new RegExp(m[2], m[3]);
+            }
         }
-        return new RegExp(m[2], m[3]);
     } catch {
-        return null;
+        compiled = null;
     }
+    _regexFromStringCache.set(input, compiled);
+    return compiled;
 }
 
 /** Escape special regex chars in a macro value so it can be embedded in a findRegex pattern. */
@@ -1460,6 +1480,8 @@ function shouldRunRule(
     if (rule.disabled) return false;
     if (!rule.placement?.includes(placement)) return false;
     if (!matchesActiveTags(rule.tags, ctx.activeTags ?? [])) return false;
+    // historyOnly gate: only fire on chat history message blocks
+    if (rule.historyOnly === true && ctx.history !== true) return false;
 
     // markdownOnly / promptOnly / default filtering
     const { isMarkdown = false, isPrompt = false, isEdit = false, depth } = ctx;
@@ -1978,6 +2000,12 @@ export function assembleGroupPromptPayload(input: GroupAssemblerInput): LLMMessa
         groupEngine.groupRoster = input.groupRoster ?? "";
         groupEngine.customAppRichMediaDirectives = input.customAppRichMediaDirectives ?? "";
         groupEngine.chatBilingualInstruction = input.chatBilingualInstruction ?? "";
+        // 状态区四宏：群聊的输出格式条目是全群共享的，之前只给了 <member> 块内的引擎，
+        // 共享条目里的 {{statusRegionSection}} 会解析成空串——群聊的状态值/内心章节整段消失。
+        groupEngine.statusRegionSection = input.statusRegionSection ?? "";
+        groupEngine.statusRegionExampleLine = input.statusRegionExampleLine ?? "";
+        groupEngine.statusRegionComposition = input.statusRegionComposition ?? "";
+        groupEngine.statusRegionFullExample = input.statusRegionFullExample ?? "";
         groupEngine.offlineBilingualInstruction = input.offlineBilingualInstruction ?? "";
         groupEngine.offlineSummaryTag = input.offlineSummaryTag ?? "summary";
 
@@ -2189,7 +2217,7 @@ export function assembleGroupPromptPayload(input: GroupAssemblerInput): LLMMessa
     const finalPayload: LLMMessage[] = [];
     blocks.forEach(b => {
         const inputCtx: RegexContext = b.fromHistory
-            ? { depth: b.depth, activeTags }
+            ? { depth: b.depth, activeTags, history: true }
             : { activeTags };
         const processedText = b.role === "tool" ? b.text : applyInputRegex(b.text, regexes, inputCtx);
         const carriesNativeToolData = b.role === "tool" || Boolean(b.toolCalls?.length);

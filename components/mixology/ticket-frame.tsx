@@ -5,31 +5,26 @@
 // 高度自适应桥与自定义状态栏同款；allow-scripts 无 same-origin，碰不到宿主页面与数据。
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { MixState } from "@/lib/mixology/types";
+import { createMixFrameHeightTracker, nextMixFrameHeight } from "@/lib/mixology/frame-height";
+import { buildMixTicketDoc } from "@/lib/mixology/ticket-doc";
 
 const FRAME_MIN_HEIGHT = 36;
+/**
+ * 小票与尾调也是 scrolling="no"，超出即截断。它们每轮插在对话流里，
+ * 不该像开场画布那样动辄十几屏，所以余量给得小一档：原来 2000（约两屏），
+ * 一个稍微复杂的小剧场就顶到头，放宽到 5000（约五屏半）。
+ */
+const FRAME_MAX_HEIGHT = 5000;
 
-function escapeHtmlText(value: string): string {
-    return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-function buildSrcDoc(html: string, raw: string): string {
-    const withRaw = html.split("{{RAW}}").join(escapeHtmlText(raw));
-    const base = /<html[\s>]/i.test(withRaw)
-        ? withRaw
-        : `<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/></head><body>${withRaw}</body></html>`;
-    const inject = `<script>window.TICKET_RAW=${JSON.stringify(raw)};window.ENCORE_RAW=window.TICKET_RAW;</` + `script>`;
-    return /<head[\s>]/i.test(base)
-        ? base.replace(/<head([^>]*)>/i, `<head$1>${inject}`)
-        : inject + base;
-}
-
-export function MixTicketFrame({ html, raw }: { html: string; raw: string }) {
+export function MixTicketFrame({ html, raw, state }: { html: string; raw: string; state?: MixState }) {
     const iframeRef = useRef<HTMLIFrameElement | null>(null);
     const [frameId] = useState(() => `mtf_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
     const [height, setHeight] = useState(FRAME_MIN_HEIGHT);
+    const trackerRef = useRef(createMixFrameHeightTracker(FRAME_MIN_HEIGHT));
 
     const srcDoc = useMemo(() => {
-        const doc = buildSrcDoc(html, raw);
+        const doc = buildMixTicketDoc(html, raw, state);
         const bridge = `<script>(function(){
   var frameId=${JSON.stringify(frameId)};
   /* 只用内容包围盒测高（scrollHeight 会跟着 iframe 视口涨，会形成"越量越高"的回路） */
@@ -47,15 +42,18 @@ export function MixTicketFrame({ html, raw }: { html: string; raw: string }) {
   setTimeout(send,60);setTimeout(send,400);setTimeout(send,1200);
 })();</` + `script>`;
         return /<\/body>/i.test(doc) ? doc.replace(/<\/body>/i, `${bridge}</body>`) : doc + bridge;
-    }, [html, raw, frameId]);
+    }, [html, raw, state, frameId]);
 
     useEffect(() => {
         const handleMessage = (event: MessageEvent) => {
             if (iframeRef.current && event.source !== iframeRef.current.contentWindow) return;
             const data = event.data as Record<string, unknown> | null;
             if (!data || data.source !== "mix-ticket-frame" || data.type !== "resize" || data.id !== frameId) return;
-            const next = Number(data.height);
-            if (Number.isFinite(next)) setHeight(Math.min(Math.max(next, FRAME_MIN_HEIGHT), 2000));
+            const applied = nextMixFrameHeight(trackerRef.current, Number(data.height), {
+                min: FRAME_MIN_HEIGHT,
+                max: FRAME_MAX_HEIGHT,
+            });
+            if (applied !== null) setHeight(applied);
         };
         window.addEventListener("message", handleMessage);
         return () => window.removeEventListener("message", handleMessage);
